@@ -39,11 +39,12 @@ OPENLLM_GATEWAY_BASE_URL = "http://localhost:8000/v1"
 # 您的 API 金鑰
 # - 若 Gateway 啟用金鑰檢查，請填寫白名單中的金鑰。
 # - 若 Gateway 未啟用金鑰檢查，可填寫任意非空字串 (例如："not_needed")。
-OPENLLM_GATEWAY_API_KEY = "DEFAULT-20250508-kbxk8c"  # <--- 請務必替換成您的 API 金鑰或適用字串
+OPENLLM_GATEWAY_API_KEY = "sk-Ko04aszCTvwUc3QZTubDbOkJK30UEQlZmUjgC5g2Z0X6g3cj"  # <--- 請務必替換成您的 API 金鑰或適用字串
 
 # 範例中使用的聊天模型名稱
 # 請確保此模型已在您的 Gateway 中設定並可用。
-CHAT_MODEL_NAME = "ollama/qwen3:8b"
+CHAT_MODEL_NAME = "xiaomi/mimo-v2.5-pro"
+# CHAT_MODEL_NAME = "ollama/qwen3:8b"
 # CHAT_MODEL_NAME = "openai/gpt-4.1"
 # CHAT_MODEL_NAME = "gemini/gemini-2.0-flash"
 # CHAT_MODEL_NAME = "claude/claude-3-7-sonnet-latest"
@@ -232,7 +233,7 @@ if __name__ == "__main__":
     # 執行所有範例函式
     example_chat_completion_non_streaming()
     example_chat_completion_streaming()
-    example_embedding()
+    # example_embedding()
 
     print("所有範例已執行完畢。")
     print("=" * 50) 

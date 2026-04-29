@@ -262,7 +262,8 @@ DEEPSEEK_API_URL = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com")
 DEEPSEEK_API_ENDPOINT_NONSTREAM = os.getenv("DEEPSEEK_API_ENDPOINT_NONSTREAM", "https://api.deepseek.com/chat/completions")
 MINMAX_API_KEY = os.getenv("MINMAX_API_KEY")  # 修改為正確的環境變數名稱
 MINMAX_API_URL = os.getenv("MINMAX_API_URL", "https://api.minimax.chat/v1/text/chatcompletion_v2")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")  # 修改為正確的環境變數名稱
+ANTHROPIC_API_URL = os.getenv("ANTHROPIC_API_URL", "https://api.anthropic.com/v1")
 
 # 設定 OpenAI 和 Google 的環境變數（如果需要）
 if OPENAI_API_KEY:
@@ -1278,7 +1279,7 @@ async def stream_chat_completion_claude(request: ChatCompletionRequest, api_key_
             error_for_log = "未設定 Anthropic API 金鑰"
             raise HTTPException(status_code=status_code_for_log, detail=error_for_log)
 
-        model_name = request.model.replace("claude/", "")
+        model_name = request.model.split("/", 1)[1] if request.model.startswith("claude/") else request.model
         system_prompt = None
         user_messages = []
         for msg in request.messages:
@@ -1301,7 +1302,7 @@ async def stream_chat_completion_claude(request: ChatCompletionRequest, api_key_
                 }
                 if system_prompt: payload["system"] = system_prompt
                 headers = {"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"}
-                url = "https://api.anthropic.com/v1/messages"
+                url = ANTHROPIC_API_URL + "/messages"
                 
                 async with aiohttp.ClientSession() as session:
                     async with session.post(url, json=payload, headers=headers) as response:
@@ -1572,7 +1573,7 @@ async def create_chat_completion(request_data: ChatCompletionRequest, fastapi_re
                 response = await get_chat_completion_minmax(request_data)
                 if api_key_for_logging and response: log_api_usage(api_key_for_logging, "chat", response.model, prompt_tokens=response.usage.get("prompt_tokens",0), completion_tokens=response.usage.get("completion_tokens",0), total_tokens=response.usage.get("total_tokens",0), input_summary=input_summary_for_logging, output_summary=response.choices[0].message.content if response.choices else None)
                 return response
-        elif request_data.model.startswith("claude/"):
+        elif request_data.model.startswith("claude/") or request_data.model.startswith("xiaomi/"):
             if request_data.stream:
                 if api_key_for_logging: log_api_usage(api_key_for_logging, "chat_stream_attempt", request_data.model, input_summary=input_summary_for_logging)
                 return await stream_chat_completion_claude(request_data, api_key_for_logging, input_summary_for_logging)
@@ -1984,83 +1985,78 @@ async def get_chat_completion_minmax(request: ChatCompletionRequest) -> ChatComp
         raise HTTPException(status_code=500, detail=f"MinMax API (non-stream) 錯誤: {str(e_general)}")
 
 async def get_chat_completion_claude(request: ChatCompletionRequest) -> ChatCompletionResponse:
-    """處理 Anthropic Claude 的非串流聊天完成請求"""
+    """處理 Anthropic Claude 的非串流聊天完成請求（使用 raw HTTP 請求，與串流處理器一致）"""
     if not ANTHROPIC_API_KEY:
         raise HTTPException(status_code=500, detail="未設定 Anthropic API 金鑰 (ANTHROPIC_API_KEY)")
 
-    model_name = request.model.replace("claude/", "")
+    model_name = request.model.split("/", 1)[1] if request.model.startswith("claude/") else request.model
     print(f"Claude non-stream: Using model {model_name}")
 
-    # 從 messages 中分離 system prompt (如果有的話)
     system_prompt = None
     user_messages = []
     for msg in request.messages:
         if msg.role == "system":
-            if system_prompt is None: # Take the first system message
+            if system_prompt is None:
                 system_prompt = msg.content
             else:
-                # Anthropic API v1 only supports one system message.
-                # Append subsequent system messages to the first user message or handle as an error.
-                # For simplicity, we'll log a warning and ignore further system messages.
                 print("Claude non-stream: Multiple system messages found. Only the first will be used.")
         else:
-            # Convert to Anthropic message format if needed (role: "user" or "assistant")
             user_messages.append({"role": msg.role, "content": msg.content})
-    
-    # Anthropic SDK requires at least one message in the messages list.
+
     if not user_messages:
         raise HTTPException(status_code=400, detail="Claude API 請求至少需要一條 user/assistant 訊息。")
 
     try:
-        from anthropic import Anthropic, AsyncAnthropic # Ensure SDK is available
-    except ImportError:
-        print("錯誤: anthropic SDK 未安裝。請執行 pip install anthropic")
-        raise HTTPException(status_code=500, detail="伺服器錯誤：缺少 anthropic SDK")
-
-    try:
-        # 使用 AsyncAnthropic Client
-        client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        
-        print(f"Claude non-stream: Sending request to Anthropic API. System prompt: '{system_prompt if system_prompt else 'None'}'. Messages: {user_messages}")
-
-        # 构建请求参数
-        api_params = {
+        payload = {
             "model": model_name,
             "messages": user_messages,
-            "max_tokens": request.max_tokens if request.max_tokens is not None else 1024, # Anthropic requires max_tokens
+            "max_tokens": request.max_tokens if request.max_tokens is not None else 1024,
             "temperature": request.temperature if request.temperature is not None else 0.7,
         }
         if system_prompt:
-            api_params["system"] = system_prompt
-        
-        response = await client.messages.create(**api_params)
+            payload["system"] = system_prompt
 
-        print(f"Claude non-stream: Received response from Anthropic API: {response}")
+        headers = {"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+        url = ANTHROPIC_API_URL + "/messages"
 
-        # 从 Claude 的回应中提取内容
-        # Claude's response object: response.content is a list of ContentBlock objects.
-        # We are interested in the text from these blocks.
+        print(f"Claude non-stream: Sending request to {url}. System prompt: '{system_prompt if system_prompt else 'None'}'. Messages: {user_messages}")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    error_message = f"Claude API 請求失敗 ({resp.status}): {error_text}"
+                    print(error_message)
+                    if resp.status == 401 or resp.status == 403:
+                        raise HTTPException(status_code=401, detail=f"Anthropic API 認證失敗: {error_text}")
+                    if resp.status == 404:
+                        raise HTTPException(status_code=404, detail=f"Anthropic 模型 '{model_name}' 未找到: {error_text}")
+                    raise HTTPException(status_code=500, detail=error_message)
+
+                data = await resp.json()
+
         response_content = ""
-        if response.content and isinstance(response.content, list):
-            for block in response.content:
-                if hasattr(block, 'text'): # Check if it's a TextBlock
-                    response_content += block.text
-        
-        # Claude 的使用情况信息在 response.usage 中
-        prompt_tokens = response.usage.input_tokens if response.usage else 0
-        completion_tokens = response.usage.output_tokens if response.usage else 0
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                response_content += block.get("text", "")
+
+        usage = data.get("usage", {})
+        prompt_tokens = usage.get("input_tokens", 0)
+        completion_tokens = usage.get("output_tokens", 0)
         total_tokens = prompt_tokens + completion_tokens
 
+        print(f"Claude non-stream: Received response. Tokens: {total_tokens}")
+
         return ChatCompletionResponse(
-            id=response.id if hasattr(response, 'id') else f"claude-{int(time.time())}",
-            created=int(time.time()), # Claude API doesn't provide 'created' in response object directly
-            model=response.model if hasattr(response, 'model') else model_name,
+            id=data.get("id", f"claude-{int(time.time())}"),
+            created=int(time.time()),
+            model=data.get("model", model_name),
             choices=[{
                 "message": {
-                    "role": "assistant", # Claude's response role is 'assistant'
+                    "role": "assistant",
                     "content": response_content
                 },
-                "finish_reason": response.stop_reason if hasattr(response, 'stop_reason') else "stop"
+                "finish_reason": data.get("stop_reason", "stop")
             }],
             usage={
                 "prompt_tokens": prompt_tokens,
@@ -2069,19 +2065,12 @@ async def get_chat_completion_claude(request: ChatCompletionRequest) -> ChatComp
             }
         )
 
-    except ImportError: # Should have been caught above, but as a safeguard
-        raise HTTPException(status_code=500, detail="伺服器錯誤：缺少 anthropic SDK")
+    except HTTPException:
+        raise
     except Exception as e:
         error_message = f"Anthropic Claude API (non-stream) 錯誤: {str(e)}"
         print(error_message)
-        # Check for specific Anthropic API errors if possible from the exception type or message
-        # e.g., if str(e) contains "authentication_error", "permission_error", "not_found_error", "rate_limit_error"
-        if "authentication failed" in str(e).lower() or "invalid api key" in str(e).lower():
-            raise HTTPException(status_code=401, detail=f"Anthropic API 金鑰無效或認證失敗: {str(e)}")
-        if "not found" in str(e).lower() and "model" in str(e).lower():
-             raise HTTPException(status_code=404, detail=f"Anthropic 模型 '{model_name}' 未找到: {str(e)}")
-        # Add more specific error handling as needed
-        raise HTTPException(status_code=500, detail=error_message) 
+        raise HTTPException(status_code=500, detail=error_message)
 
 async def get_chat_completion_huggingface(request: ChatCompletionRequest) -> ChatCompletionResponse:
     """處理 Hugging Face 的非串流聊天完成請求"""
