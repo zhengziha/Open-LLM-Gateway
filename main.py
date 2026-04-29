@@ -365,6 +365,59 @@ app = FastAPI(
     version="0.3.0",
 )
 
+# --- Anthropic 原生 API 透传端点 (供 Claude CLI 等直接使用) ---
+
+@app.post("/v1/messages")
+async def anthropic_messages_proxy(request: Request, _authorized: bool = api_key_dependency):
+    """
+    透传 Anthropic Messages API 请求到配置的代理地址。
+    支持流式和非流式请求，供 Claude CLI 等原生 Anthropic SDK 客户端使用。
+    """
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=500, detail="未設定 Anthropic API 金鑰")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="無效的 JSON 請求體")
+
+    is_stream = body.get("stream", False)
+    url = ANTHROPIC_API_URL + "/messages"
+
+    # 转发原始请求头中的关键字段
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": request.headers.get("anthropic-version", "2023-06-01"),
+        "content-type": "application/json",
+    }
+
+    if is_stream:
+        async def generate_stream():
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=body, headers=headers) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'type': 'api_error', 'message': f'Proxy error ({resp.status}): {error_text}'}})}\n\n"
+                        return
+                    async for line in resp.content:
+                        if line.strip():
+                            yield line.decode('utf-8') + "\n"
+
+        return StreamingResponse(
+            generate_stream(),
+            media_type="text/event-stream",
+            headers={"Content-Type": "text/event-stream; charset=utf-8"},
+        )
+    else:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=body, headers=headers) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    raise HTTPException(status_code=resp.status, detail=error_text)
+                data = await resp.json()
+                return data
+
+
 # --- API 端點 (大幅修改) ---
 
 @app.post("/v1/embeddings", response_model=EmbeddingResponse)
